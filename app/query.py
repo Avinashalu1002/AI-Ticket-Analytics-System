@@ -18,6 +18,9 @@ def get_average_rating(df):
 def get_top_agent(df):
     resolved_tickets = df[df["status"] == "Resolved"]
 
+    if resolved_tickets.empty:
+        return "No Data"
+
     agent_stats = (
         resolved_tickets
         .groupby("agent_id")
@@ -38,98 +41,85 @@ def execute_dynamic_query(parsed_query, df):
 
     # Apply filters
     for column, value in filters.items():
-
         if column in filtered_df.columns:
-
-            filtered_df = filtered_df[
-                filtered_df[column] == value
-            ]
+            filtered_df = filtered_df[filtered_df[column] == value]
 
     # Apply conditions
     for column, rule in conditions.items():
-
         if column not in filtered_df.columns:
             continue
-
         if "gt" in rule:
-
-            filtered_df = filtered_df[
-                filtered_df[column] > rule["gt"]
-            ]
-
+            filtered_df = filtered_df[filtered_df[column] > rule["gt"]]
         if "lt" in rule:
-
-            filtered_df = filtered_df[
-                filtered_df[column] < rule["lt"]
-            ]
+            filtered_df = filtered_df[filtered_df[column] < rule["lt"]]
 
     # Count
     if operation == "count":
+        return {"count": len(filtered_df)}
 
-        return {
-            "count": len(filtered_df)
-        }
-
-    # Average
+    # Average (generic — works for any column + any filter)
     elif operation == "average":
-
-        field = parsed_query.get("field")
-
-        if field not in filtered_df.columns:
-
-            return {
-                "message": "Invalid field"
-            }
-
-        return {
-            "average": round(
-                filtered_df[field].mean(),
-                2
-            )
-        }
+        column = parsed_query.get("column")  # consistent key name
+        if not column or column not in filtered_df.columns:
+            return {"message": "Invalid or missing column for average"}
+        return {"average": round(filtered_df[column].mean(), 2)}
 
     # List records
     elif operation == "list":
+        return filtered_df.head(20).to_dict(orient="records")
 
-        return filtered_df.head(20).to_dict(
-            orient="records"
-        )
-
-    # Top agent
+    # Top Agent
     elif operation == "top_agent":
-
         agent_stats = (
             filtered_df
             .groupby("agent_id")
             .size()
             .sort_values(ascending=False)
         )
-
         if agent_stats.empty:
-
-            return {
-                "message": "No matching records"
-            }
-
+            return {"message": "No matching records"}
         return {
             "top_agent": agent_stats.index[0],
             "ticket_count": int(agent_stats.iloc[0])
         }
 
-    # Anomaly check
-    elif operation == "anomaly_check":
-
-        anomalies = filtered_df[
-            filtered_df["resolution_time_hrs"] > 48
-        ]
-
+    # Lowest Rated Agent
+    elif operation == "lowest_rated_agent":
+        ratings = (
+            filtered_df
+            .dropna(subset=["customer_rating"])
+            .groupby("agent_id")["customer_rating"]
+            .mean()
+            .sort_values()
+        )
+        if ratings.empty:
+            return {"message": "No ratings available"}
         return {
-            "anomaly_count": len(anomalies),
-            "tickets": anomalies.head(10).to_dict(
-                orient="records"
-            )
+            "agent_id": ratings.index[0],
+            "average_rating": round(float(ratings.iloc[0]), 2)
         }
 
-    return {
-        "message": "Unsupported operation"
-    }
+    # Anomaly Check — delegates to detect_anomalies for consistency
+    elif operation == "anomaly_check":
+        from app.anomaly_detector import detect_anomalies
+        anomalies = detect_anomalies(filtered_df)
+        return {
+            "anomaly_count": len(anomalies),
+            "tickets": anomalies[:10]
+        }
+
+    # Max
+    elif operation == "max":
+        column = parsed_query.get("column")
+        if not column or column not in filtered_df.columns:
+            return {"message": "Invalid or missing column for max"}
+        return {"max": float(filtered_df[column].max())}
+
+    # Min
+    elif operation == "min":
+        column = parsed_query.get("column")
+        if not column or column not in filtered_df.columns:
+            return {"message": "Invalid or missing column for min"}
+        return {"min": float(filtered_df[column].min())}
+
+    return {"message": "Unsupported operation"}
